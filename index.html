@@ -597,19 +597,63 @@
         let db = null;
         let auth = null;
 
-        function initializeFirebaseApp(config) {
+        async function initializeFirebaseApp(config) {
             try {
                 if (typeof firebase !== 'undefined') {
                     if (!firebase.apps.length) {
                         firebase.initializeApp(config);
                     }
                     const dbId = config.firestoreDatabaseId || config.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
-                    db = firebase.app().firestore(dbId);
+                    
+                    if (dbId && dbId !== '(default)') {
+                        console.log("Attempting to connect to custom DB:", dbId);
+                        const customDb = firebase.app().firestore(dbId);
+                        
+                        // Perform a fast get request check with a short timeout to see if the custom DB is responsive
+                        const connectionTest = new Promise((resolve) => {
+                            customDb.collection('rooms').limit(1).get()
+                                .then(() => {
+                                    console.log("Connection to custom DB succeeded!");
+                                    resolve(true);
+                                })
+                                .catch(err => {
+                                    console.warn("Connection to custom DB failed. Error:", err.message || err);
+                                    resolve(false);
+                                });
+                        });
+
+                        const timeoutPromise = new Promise((resolve) => {
+                            setTimeout(() => {
+                                console.warn("Connection to custom DB timed out.");
+                                resolve(false);
+                            }, 1200);
+                        });
+
+                        const testResult = await Promise.race([connectionTest, timeoutPromise]);
+                        
+                        if (testResult) {
+                            db = customDb;
+                            console.log("Using custom Firestore DB:", dbId);
+                        } else {
+                            console.log("Falling back to default Firestore database...");
+                            db = firebase.app().firestore();
+                        }
+                    } else {
+                        console.log("Using default Firestore database.");
+                        db = firebase.app().firestore();
+                    }
+                    
                     auth = firebase.auth();
-                    console.log("Firebase initialized successfully with DB ID:", dbId);
+                    console.log("Firebase initialized successfully.");
                 }
             } catch (e) {
                 console.error("Firebase init error:", e);
+                try {
+                    db = firebase.app().firestore();
+                    auth = firebase.auth();
+                } catch (fallbackErr) {
+                    console.error("Critical fallback init failed:", fallbackErr);
+                }
             }
         }
 
@@ -3835,13 +3879,13 @@
 
         fetch('/firebase-applet-config.json')
             .then(res => res.json())
-            .then(config => {
-                initializeFirebaseApp(config);
+            .then(async config => {
+                await initializeFirebaseApp(config);
                 root.render(React.createElement(App));
             })
-            .catch(err => {
+            .catch(async err => {
                 console.warn("Could not fetch firebase-applet-config.json dynamically, using default fallback config:", err);
-                initializeFirebaseApp(defaultFirebaseConfig);
+                await initializeFirebaseApp(defaultFirebaseConfig);
                 root.render(React.createElement(App));
             });
     </script>
