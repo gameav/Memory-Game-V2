@@ -1,0 +1,8 @@
+{
+  "name": "Main memory-game",
+  "description": "Imported from GitHub: gameav/memory-game",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

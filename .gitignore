@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+serviceAccountKey.json
+firebase-adminsdk*.json
+
+# Build and IDE
+dist/
+build/
+.vscode/
+.idea/
+*.log

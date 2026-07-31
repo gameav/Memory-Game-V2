@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "rooms": {
+      "title": "Room",
+      "description": "Online multiplayer game room",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "hostId": { "type": "string" },
+        "hostName": { "type": "string" },
+        "maxPlayers": { "type": "number" },
+        "status": { "type": "string" },
+        "isPublic": { "type": "boolean" },
+        "players": { "type": "array" },
+        "deck": { "type": "array" },
+        "discardPile": { "type": "array" },
+        "turnPlayerIndex": { "type": "number" },
+        "turnStage": { "type": "string" },
+        "showCalledBy": { "type": "number" },
+        "lastActionText": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["code", "hostId", "status", "maxPlayers"]
+    }
+  }
+}
