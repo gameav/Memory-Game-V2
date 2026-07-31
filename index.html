@@ -919,6 +919,9 @@
             const [lobbyRegionFilter, setLobbyRegionFilter] = useState('all');
             const [copyFeedback, setCopyFeedback] = useState(false);
 
+            const onlineRoomLoadedRef = React.useRef(false);
+            const isHostRef = React.useRef(false);
+
             const getOrCreateLocalUid = () => {
                 try {
                     let stored = localStorage.getItem('memory_grid_uid');
@@ -984,6 +987,7 @@
                     const roomRef = db.collection('rooms').doc(onlineRoomCode);
                     const unsubscribe = roomRef.onSnapshot(doc => {
                         if (doc.exists) {
+                            onlineRoomLoadedRef.current = true;
                             const data = doc.data();
                             setOnlineRoom(data);
                             
@@ -1017,13 +1021,23 @@
                             if (data.emotes !== undefined) setEmotes(data.emotes || []);
                             if (data.dealSequenceKey !== undefined) setDealSequenceKey(data.dealSequenceKey);
                         } else {
-                            setIsOnlineMode(false);
-                            setOnlineRoom(null);
-                            setOnlineRoomCode("");
-                            setGameState('menu');
-                            setMessage("Room closed by host.");
+                            // Only kick back if we have successfully loaded the room at least once,
+                            // or if we are not the host. This prevents race condition boots on creation.
+                            if (!isHostRef.current || onlineRoomLoadedRef.current) {
+                                setIsOnlineMode(false);
+                                setOnlineRoom(null);
+                                setOnlineRoomCode("");
+                                setGameState('menu');
+                                setMessage("Room closed by host.");
+                                onlineRoomLoadedRef.current = false;
+                                isHostRef.current = false;
+                            }
                         }
-                    }, err => console.error("Room snapshot error:", err));
+                    }, err => {
+                        console.error("Room snapshot error:", err);
+                        // Show error in lobby UI if snapshot fails (e.g. permission or network issue)
+                        setOnlineError("Room connection error: " + (err.message || err));
+                    });
                     return () => unsubscribe();
                 }
             }, [isOnlineMode, onlineRoomCode, userUid]);
@@ -1108,6 +1122,8 @@
                 };
 
                 try {
+                    isHostRef.current = true;
+                    onlineRoomLoadedRef.current = false;
                     await db.collection('rooms').doc(code).set(roomData);
                     setOnlineRoomCode(code);
                     setIsOnlineMode(true);
@@ -1115,7 +1131,9 @@
                     setGameState('online-lobby');
                 } catch (err) {
                     console.error("Error creating room", err);
-                    setOnlineError("Could not create room. Try again.");
+                    isHostRef.current = false;
+                    onlineRoomLoadedRef.current = false;
+                    setOnlineError("Could not create room: " + (err.message || err));
                 }
             };
 
@@ -1166,6 +1184,9 @@
                         updatedPlayers[existingIdx].name = effectiveName;
                     }
 
+                    isHostRef.current = false;
+                    onlineRoomLoadedRef.current = false;
+
                     await docRef.update({
                         players: updatedPlayers,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -1176,7 +1197,9 @@
                     setGameState('online-lobby');
                 } catch (err) {
                     console.error("Error joining room", err);
-                    setOnlineError("Failed to join room.");
+                    isHostRef.current = false;
+                    onlineRoomLoadedRef.current = false;
+                    setOnlineError("Failed to join room: " + (err.message || err));
                 }
             };
 
@@ -1300,6 +1323,8 @@
                 setIsOnlineMode(false);
                 setOnlineRoom(null);
                 setOnlineRoomCode("");
+                onlineRoomLoadedRef.current = false;
+                isHostRef.current = false;
                 setGameState('menu');
             };
 
