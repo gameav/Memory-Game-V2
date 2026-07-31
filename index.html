@@ -606,36 +606,20 @@
                     const dbId = config.firestoreDatabaseId || config.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
                     
                     if (dbId && dbId !== '(default)') {
-                        console.log("Attempting to connect to custom DB:", dbId);
+                        console.log("Initializing Firestore with custom DB ID:", dbId);
                         const customDb = firebase.app().firestore(dbId);
                         
-                        // Perform a fast get request check with a short timeout to see if the custom DB is responsive
-                        const connectionTest = new Promise((resolve) => {
-                            customDb.collection('rooms').limit(1).get()
-                                .then(() => {
-                                    console.log("Connection to custom DB succeeded!");
-                                    resolve(true);
-                                })
-                                .catch(err => {
-                                    console.warn("Connection to custom DB failed. Error:", err.message || err);
-                                    resolve(false);
-                                });
-                        });
-
-                        const timeoutPromise = new Promise((resolve) => {
-                            setTimeout(() => {
-                                console.warn("Connection to custom DB timed out.");
-                                resolve(false);
-                            }, 1200);
-                        });
-
-                        const testResult = await Promise.race([connectionTest, timeoutPromise]);
-                        
-                        if (testResult) {
+                        try {
+                            // Test if the custom database is responsive using a fast, isolated document check.
+                            // Set a short timeout so offline or slow clients don't hang.
+                            const testPromise = customDb.collection('rooms').doc('_check_').get();
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1500));
+                            
+                            await Promise.race([testPromise, timeoutPromise]);
                             db = customDb;
-                            console.log("Using custom Firestore DB:", dbId);
-                        } else {
-                            console.log("Falling back to default Firestore database...");
+                            console.log("Verified custom Firestore database is active.");
+                        } catch (err) {
+                            console.warn("Custom DB test failed or timed out. Falling back to default database.", err.message || err);
                             db = firebase.app().firestore();
                         }
                     } else {
@@ -1050,7 +1034,17 @@
                             if (data.players) {
                                 setPlayers(data.players);
                                 const myIdx = data.players.findIndex(p => p.id === userUid);
-                                if (myIdx !== -1) setMyPlayerIndex(myIdx);
+                                if (myIdx !== -1) {
+                                    setMyPlayerIndex(myIdx);
+                                } else if (data.status === 'waiting') {
+                                    setIsOnlineMode(false);
+                                    setOnlineRoom(null);
+                                    setOnlineRoomCode("");
+                                    setGameState('online-hub');
+                                    setOnlineError("You were kicked from the room by the host.");
+                                    onlineRoomLoadedRef.current = false;
+                                    isHostRef.current = false;
+                                }
                             }
 
                             if (data.deck !== undefined) setDeck(data.deck);
@@ -1153,6 +1147,8 @@
                     status: 'waiting',
                     isPublic: createIsPublic,
                     region: createRoomRegion,
+                    turnTimer: 30,
+                    deckTheme: 'classic',
                     players: initialPlayers,
                     playerCount: createMaxPlayers,
                     deck: [],
@@ -1275,6 +1271,28 @@
                 if (bots.length === 0) return;
                 const lastBotId = bots[bots.length - 1].id;
                 const updated = onlineRoom.players.filter(p => p.id !== lastBotId);
+                updateOnlineRoom({ players: updated });
+            };
+
+            const kickPlayer = async (playerId) => {
+                if (!onlineRoom || !userUid || onlineRoom.hostId !== userUid) return;
+                soundManager.play('click');
+                const updated = onlineRoom.players.filter(p => p.id !== playerId);
+                updateOnlineRoom({ 
+                    players: updated,
+                    playerCount: updated.length
+                });
+            };
+
+            const updateBotDifficulty = async (botId, newDifficulty) => {
+                if (!onlineRoom || !userUid || onlineRoom.hostId !== userUid) return;
+                soundManager.play('click');
+                const updated = onlineRoom.players.map(p => {
+                    if (p.id === botId) {
+                        return { ...p, botDifficulty: newDifficulty };
+                    }
+                    return p;
+                });
                 updateOnlineRoom({ players: updated });
             };
 
@@ -2915,119 +2933,430 @@
                     }
                 };
 
+                const currentPlayersCount = onlineRoom?.players?.length || 0;
+                const maxPlayers = onlineRoom?.maxPlayers || 4;
+
                 return (
-                    <div className={`page-screen ${pageVisible ? 'visible' : 'hidden'} flex flex-col items-center justify-center min-h-full h-full w-full p-3 sm:p-4 text-center overflow-y-auto`}>
-                        <div className="bg-emerald-950/90 border-2 border-emerald-700/80 p-5 sm:p-7 rounded-3xl shadow-2xl max-w-md w-full backdrop-blur-md my-auto max-h-full overflow-y-auto">
-                            
-                            {/* ROOM CODE HEADER */}
-                            <div className="bg-emerald-900/60 p-4 rounded-2xl border border-yellow-500/40 mb-4 shadow-inner">
-                                <span className="text-[10px] uppercase font-bold tracking-widest text-emerald-300 block mb-1">ROOM CODE</span>
-                                <div className="flex items-center justify-center gap-3">
-                                    <span className="text-3xl font-black tracking-widest text-yellow-400 font-mono">{onlineRoomCode}</span>
+                    <div className={`page-screen ${pageVisible ? 'visible' : 'hidden'} flex flex-col items-center justify-start min-h-full h-full w-full p-3 sm:p-5 text-center overflow-y-auto`}>
+                        {isHost ? (
+                            /* =================== 👑 HOST COMMAND DASHBOARD =================== */
+                            <div className="bg-emerald-950/95 border-2 border-yellow-500/30 p-5 sm:p-8 rounded-3xl shadow-2xl max-w-4xl w-full backdrop-blur-md my-auto max-h-full overflow-y-auto text-left">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-emerald-800 pb-4 mb-5 gap-3">
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-2xl">👑</span>
+                                            <h1 className="text-xl sm:text-2xl font-black text-yellow-400 uppercase tracking-wide">Host Command Lobby</h1>
+                                        </div>
+                                        <p className="text-emerald-200/70 text-xs mt-1">Configure options, manage participants, and launch the match</p>
+                                    </div>
                                     <button 
-                                        onClick={copyRoomCode}
-                                        className="bg-emerald-800 hover:bg-emerald-700 text-white font-extrabold text-xs px-2.5 py-1.5 rounded-xl border border-emerald-600 transition-all flex items-center gap-1"
+                                        onClick={leaveOnlineRoom}
+                                        className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 px-4 py-2 rounded-xl text-xs font-bold border border-rose-800 transition-colors"
                                     >
-                                        <span>{copyFeedback ? '✓ Copied!' : '📋 Copy'}</span>
+                                        Disband Room 🚪
                                     </button>
                                 </div>
-                            </div>
 
-                            {/* PLAYERS LIST */}
-                            <div className="text-left mb-4">
-                                <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 mb-2 flex items-center justify-between">
-                                    <span>Joined Players ({onlineRoom?.players?.length || 0} / {onlineRoom?.maxPlayers || 4})</span>
-                                    {isHost && <span className="text-[10px] text-yellow-400 font-bold">You are Host 👑</span>}
-                                </h3>
+                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                    {/* LEFT SECTION: Players & Code (7 cols) */}
+                                    <div className="lg:col-span-7 space-y-5">
+                                        {/* ROOM CODE DISPLAY */}
+                                        <div className="bg-emerald-900/40 p-4 rounded-2xl border border-emerald-800 shadow-inner flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                            <div>
+                                                <span className="text-[10px] uppercase font-bold tracking-widest text-emerald-300 block mb-0.5">ROOM CODE</span>
+                                                <span className="text-3xl font-black tracking-widest text-yellow-400 font-mono">{onlineRoomCode}</span>
+                                            </div>
+                                            <button 
+                                                onClick={copyRoomCode}
+                                                className="bg-emerald-800 hover:bg-emerald-700 text-white font-extrabold text-xs px-3 py-2 rounded-xl border border-emerald-600 transition-all flex items-center justify-center gap-1.5 self-stretch sm:self-center"
+                                            >
+                                                <span>{copyFeedback ? '✓ Code Copied!' : '📋 Copy Code'}</span>
+                                            </button>
+                                        </div>
 
-                                <div className="space-y-2">
-                                    {onlineRoom?.players?.map((p, idx) => (
-                                        <div key={p.id || idx} className="bg-emerald-900/40 p-3 rounded-xl border border-emerald-800/80 flex items-center justify-between">
-                                            <div className="flex items-center gap-2.5">
-                                                <div className="w-8 h-8 rounded-full bg-emerald-800 flex items-center justify-center font-bold text-yellow-300 text-sm border border-emerald-600">
-                                                    {p.isBot ? '🤖' : p.isHost ? '👑' : `P${idx+1}`}
-                                                </div>
-                                                <div>
-                                                    <div className="font-extrabold text-white text-xs flex items-center gap-1.5">
-                                                        <span>{p.name}</span>
-                                                        {p.id === userUid && <span className="text-[9px] bg-yellow-500 text-slate-950 font-bold px-1.5 py-0.2 rounded">YOU</span>}
-                                                    </div>
-                                                    <div className="text-[10px] text-emerald-300/60">
-                                                        {p.isBot ? 'AI Bot' : p.isHost ? 'Room Host' : 'Player'}
-                                                    </div>
-                                                </div>
+                                        {/* PARTICIPANTS SECTION */}
+                                        <div className="bg-emerald-900/20 p-4 rounded-2xl border border-emerald-800/60">
+                                            <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 mb-3 flex items-center justify-between">
+                                                <span>Joined Players ({currentPlayersCount} / {maxPlayers})</span>
+                                                <span className="text-[10px] bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 px-2 py-0.5 rounded-full font-bold">You are Host</span>
+                                            </h3>
+
+                                            <div className="space-y-2.5 max-h-[220px] overflow-y-auto pr-1">
+                                                {onlineRoom?.players?.map((p, idx) => {
+                                                    const isSelf = p.id === userUid;
+                                                    return (
+                                                        <div key={p.id || idx} className="bg-emerald-900/50 p-3 rounded-xl border border-emerald-800/80 flex items-center justify-between gap-2">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-9 h-9 rounded-full bg-emerald-800 flex items-center justify-center font-bold text-yellow-300 text-xs border border-emerald-600">
+                                                                    {p.isBot ? '🤖' : p.isHost ? '👑' : `P${idx+1}`}
+                                                                </div>
+                                                                <div>
+                                                                    <div className="font-extrabold text-white text-xs flex items-center gap-1.5">
+                                                                        <span className="truncate max-w-[120px]">{p.name}</span>
+                                                                        {isSelf && <span className="text-[9px] bg-yellow-500 text-slate-950 font-bold px-1.5 py-0.2 rounded">YOU</span>}
+                                                                    </div>
+                                                                    {p.isBot ? (
+                                                                        <div className="flex items-center gap-1.5 mt-0.5">
+                                                                            <span className="text-[10px] text-emerald-300/60 font-semibold">AI Bot</span>
+                                                                            <span className="text-[9px] text-emerald-300/40">•</span>
+                                                                            {/* Bot Difficulty Select */}
+                                                                            <select 
+                                                                                value={p.botDifficulty || 'medium'}
+                                                                                onChange={(e) => updateBotDifficulty(p.id, e.target.value)}
+                                                                                className="bg-emerald-950/80 border border-emerald-800 text-[10px] text-yellow-400 font-bold rounded px-1 py-0.2 focus:outline-none focus:ring-1 focus:ring-yellow-400 animate-none"
+                                                                            >
+                                                                                <option value="easy">Easy Bot</option>
+                                                                                <option value="medium">Medium Bot</option>
+                                                                                <option value="hard">Hard Bot</option>
+                                                                            </select>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="text-[10px] text-emerald-300/60 mt-0.5">
+                                                                            {p.isHost ? 'Room Creator' : 'Human Player'}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="flex items-center gap-2">
+                                                                <div className="text-xs font-bold">
+                                                                    {p.isReady ? (
+                                                                        <span className="text-emerald-400 bg-emerald-950/80 px-2 py-1 rounded-lg border border-emerald-600 text-[10px]">✓ Ready</span>
+                                                                    ) : (
+                                                                        <span className="text-amber-300 bg-amber-950/80 px-2 py-1 rounded-lg border border-amber-700/60 text-[10px] animate-pulse">⏳ Waiting</span>
+                                                                    )}
+                                                                </div>
+
+                                                                {!p.isHost && (
+                                                                    <button 
+                                                                        onClick={() => kickPlayer(p.id)}
+                                                                        className="bg-rose-950/80 hover:bg-rose-900 border border-rose-800/80 text-rose-300 hover:text-white p-1 rounded-lg transition-colors text-xs"
+                                                                        title="Kick Player"
+                                                                    >
+                                                                        ❌
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
 
-                                            <div className="text-xs font-bold">
-                                                {p.isReady ? (
-                                                    <span className="text-emerald-400 bg-emerald-950/80 px-2 py-1 rounded-lg border border-emerald-600">✓ Ready</span>
+                                            {/* BOT CONTROLS */}
+                                            <div className="flex gap-2.5 mt-3">
+                                                {currentPlayersCount < maxPlayers ? (
+                                                    <button 
+                                                        onClick={addBotToOnlineRoom}
+                                                        className="flex-1 bg-emerald-800 hover:bg-emerald-700 text-white font-bold py-2 rounded-xl text-xs border border-emerald-600 transition-colors flex items-center justify-center gap-1.5"
+                                                    >
+                                                        <span>🤖</span> Add AI Bot
+                                                    </button>
                                                 ) : (
-                                                    <span className="text-amber-300 bg-amber-950/80 px-2 py-1 rounded-lg border border-amber-700/60 animate-pulse">⏳ Waiting</span>
+                                                    <div className="flex-1 bg-emerald-900/10 text-emerald-500 text-center py-2 rounded-xl text-xs font-semibold border border-dashed border-emerald-800/40">
+                                                        Lobby is Full (Slots: {maxPlayers})
+                                                    </div>
+                                                )}
+                                                {onlineRoom?.players?.some(p => p.isBot) && (
+                                                    <button 
+                                                        onClick={removeBotFromOnlineRoom}
+                                                        className="bg-rose-950/40 hover:bg-rose-950/80 text-rose-300 hover:text-rose-200 font-bold px-3 py-2 rounded-xl text-xs border border-rose-900/60 transition-colors"
+                                                    >
+                                                        Remove Bot
+                                                    </button>
                                                 )}
                                             </div>
                                         </div>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* HOST CONTROLS */}
-                            {isHost && (
-                                <div className="space-y-2 mb-4">
-                                    <div className="flex gap-2">
-                                        {(onlineRoom?.players?.length || 0) < (onlineRoom?.maxPlayers || 4) && (
-                                            <button 
-                                                onClick={addBotToOnlineRoom}
-                                                className="flex-1 bg-emerald-800 hover:bg-emerald-700 text-white font-bold py-2 rounded-xl text-xs border border-emerald-600 transition-colors"
-                                            >
-                                                + Add AI Bot 🤖
-                                            </button>
-                                        )}
-                                        {onlineRoom?.players?.some(p => p.isBot) && (
-                                            <button 
-                                                onClick={removeBotFromOnlineRoom}
-                                                className="flex-1 bg-rose-950/80 hover:bg-rose-900 text-rose-200 font-bold py-2 rounded-xl text-xs border border-rose-800 transition-colors"
-                                            >
-                                                - Remove Bot
-                                            </button>
-                                        )}
                                     </div>
 
+                                    {/* RIGHT SECTION: More Settings (5 cols) */}
+                                    <div className="lg:col-span-5 bg-emerald-900/20 p-5 rounded-2xl border border-emerald-800/60 space-y-4">
+                                        <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 border-b border-emerald-800/50 pb-2">
+                                            ⚙️ Custom Game Rules
+                                        </h3>
+
+                                        {/* Max Players (Dynamic Slot Size) */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-[10px] uppercase font-bold tracking-wider text-emerald-300 flex justify-between">
+                                                <span>Max Players Count</span>
+                                                <span className="text-yellow-400 font-extrabold">{maxPlayers} Slots</span>
+                                            </label>
+                                            <div className="grid grid-cols-3 gap-1.5">
+                                                {[2, 3, 4].map(num => {
+                                                    const isLess = currentPlayersCount > num;
+                                                    return (
+                                                        <button
+                                                            key={num}
+                                                            disabled={isLess}
+                                                            onClick={() => updateOnlineRoom({ maxPlayers: num })}
+                                                            className={`py-1.5 rounded-lg font-bold text-xs transition-colors ${
+                                                                maxPlayers === num 
+                                                                    ? 'bg-yellow-500 text-slate-950 shadow ring-1 ring-yellow-400' 
+                                                                    : isLess
+                                                                        ? 'bg-slate-950/40 text-slate-600 cursor-not-allowed border border-slate-900'
+                                                                        : 'bg-emerald-950 hover:bg-emerald-800 text-emerald-300 border border-emerald-800/60'
+                                                            }`}
+                                                            title={isLess ? `Cannot decrease below current player count (${currentPlayersCount})` : ''}
+                                                        >
+                                                            {num} Players
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        {/* Room Privacy (Public/Private) */}
+                                        <div className="flex items-center justify-between bg-emerald-950/40 p-2.5 rounded-xl border border-emerald-800/40">
+                                            <div>
+                                                <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300 block">Lobby Privacy</span>
+                                                <span className="text-xs text-white/70">{onlineRoom?.isPublic ? 'Visible in lobby finder' : 'Direct invite code only'}</span>
+                                            </div>
+                                            <button
+                                                onClick={() => updateOnlineRoom({ isPublic: !onlineRoom.isPublic })}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-black transition-colors ${
+                                                    onlineRoom?.isPublic 
+                                                        ? 'bg-emerald-600 text-white' 
+                                                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                                                }`}
+                                            >
+                                                {onlineRoom?.isPublic ? '🌐 Public' : '🔒 Private'}
+                                            </button>
+                                        </div>
+
+                                        {/* Server Region */}
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300 block">Host Region Server</span>
+                                            <div className="grid grid-cols-3 gap-1">
+                                                {[
+                                                    { id: 'usa', label: '🇺🇸 US' },
+                                                    { id: 'canada', label: '🇨🇦 CA' },
+                                                    { id: 'global', label: '🌐 Global' }
+                                                ].map(reg => (
+                                                    <button
+                                                        key={reg.id}
+                                                        onClick={() => updateOnlineRoom({ region: reg.id })}
+                                                        className={`py-1.5 rounded-lg font-bold text-[10px] transition-all border ${
+                                                            (onlineRoom?.region || 'global') === reg.id 
+                                                                ? 'bg-yellow-500 text-slate-950 shadow-md border-yellow-400 font-extrabold' 
+                                                                : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-850 border-emerald-800/40'
+                                                        }`}
+                                                    >
+                                                        {reg.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Turn Timer Limits */}
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300 block">Turn Time Limit</span>
+                                            <div className="grid grid-cols-4 gap-1">
+                                                {[
+                                                    { value: 15, label: '15s' },
+                                                    { value: 30, label: '30s' },
+                                                    { value: 60, label: '60s' },
+                                                    { value: 0, label: 'None' }
+                                                ].map(timerOpt => {
+                                                    const isSel = (onlineRoom?.turnTimer ?? 30) === timerOpt.value;
+                                                    return (
+                                                        <button
+                                                            key={timerOpt.value}
+                                                            onClick={() => updateOnlineRoom({ turnTimer: timerOpt.value })}
+                                                            className={`py-1.5 rounded-lg font-bold text-[10px] transition-all border ${
+                                                                isSel
+                                                                    ? 'bg-yellow-500 text-slate-950 border-yellow-400 font-extrabold'
+                                                                    : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-855 border-emerald-800/40'
+                                                            }`}
+                                                        >
+                                                            {timerOpt.label}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        {/* Card Style Themes */}
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-300 block">Deck Card Theme</span>
+                                            <div className="grid grid-cols-2 gap-1.5">
+                                                {[
+                                                    { id: 'classic', label: '🃏 Classic Standard' },
+                                                    { id: 'elemental', label: '🔥 Elemental Runes' },
+                                                    { id: 'retro', label: '👾 Retro Pixel' },
+                                                    { id: 'cyber', label: '🌌 Cyber Neon' }
+                                                ].map(themeOpt => {
+                                                    const isSel = (onlineRoom?.deckTheme || 'classic') === themeOpt.id;
+                                                    return (
+                                                        <button
+                                                            key={themeOpt.id}
+                                                            onClick={() => updateOnlineRoom({ deckTheme: themeOpt.id })}
+                                                            className={`py-1.5 px-1 rounded-lg font-bold text-[10px] truncate transition-all border ${
+                                                                isSel
+                                                                    ? 'bg-yellow-500 text-slate-950 border-yellow-400 font-extrabold'
+                                                                    : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-855 border-emerald-800/40'
+                                                            }`}
+                                                            title={themeOpt.label}
+                                                        >
+                                                            {themeOpt.label}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* START BUTTON ZONE */}
+                                <div className="mt-6 pt-4 border-t border-emerald-800/60 flex flex-col items-center">
                                     <button 
                                         onClick={startOnlineGame}
                                         disabled={!canStart}
-                                        className={`w-full font-black py-3.5 px-6 rounded-xl shadow-lg transition-all text-base uppercase tracking-wider ${
+                                        className={`w-full font-black py-4 px-6 rounded-2xl shadow-xl transition-all text-base uppercase tracking-wider ${
                                             canStart 
-                                                ? 'bg-yellow-500 hover:bg-yellow-400 text-slate-950 scale-100 cursor-pointer' 
+                                                ? 'bg-yellow-500 hover:bg-yellow-400 text-slate-950 scale-100 hover:shadow-yellow-500/10 cursor-pointer active:scale-98 animate-none' 
                                                 : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60'
                                         }`}
                                     >
-                                        START GAME 🚀
+                                        Launch Online Game 🚀
                                     </button>
+                                    <p className="text-[10px] text-emerald-300/60 font-semibold mt-2.5 text-center">
+                                        {canStart 
+                                            ? "Everyone is ready! Click launch to deal cards and begin the match." 
+                                            : "Need at least 2 players in the lobby (humans or bots) to start the match."}
+                                    </p>
                                 </div>
-                            )}
-
-                            {!isHost && (
-                                <div className="mb-4">
+                            </div>
+                        ) : (
+                            /* =================== 👥 GUEST WAIT LOBBY SCREEN =================== */
+                            <div className="bg-emerald-950/95 border border-emerald-800 p-5 sm:p-7 rounded-3xl shadow-2xl max-w-4xl w-full backdrop-blur-md my-auto max-h-full overflow-y-auto text-left">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-emerald-800 pb-4 mb-5 gap-3">
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="animate-pulse inline-block w-2.5 h-2.5 rounded-full bg-yellow-400"></span>
+                                            <h1 className="text-lg sm:text-xl font-extrabold text-white uppercase tracking-wide">Waiting for Host...</h1>
+                                        </div>
+                                        <p className="text-emerald-200/70 text-xs mt-1">Please mark yourself ready while the host configures the game settings</p>
+                                    </div>
                                     <button 
-                                        onClick={toggleOnlineReady}
-                                        className={`w-full font-bold py-3 rounded-xl shadow transition-all text-sm ${
-                                            onlineRoom?.players?.[myPlayerIndex]?.isReady 
-                                                ? 'bg-emerald-700 text-white' 
-                                                : 'bg-yellow-500 hover:bg-yellow-400 text-slate-950'
-                                        }`}
+                                        onClick={leaveOnlineRoom}
+                                        className="bg-emerald-900/60 hover:bg-rose-950/80 text-emerald-200 hover:text-rose-200 px-4 py-2 rounded-xl text-xs font-bold border border-emerald-700/60 transition-colors"
                                     >
-                                        {onlineRoom?.players?.[myPlayerIndex]?.isReady ? '✓ You Are Ready!' : 'Click When Ready'}
+                                        Leave Room 🚪
                                     </button>
                                 </div>
-                            )}
 
-                            <button 
-                                onClick={leaveOnlineRoom}
-                                className="w-full bg-emerald-900/60 hover:bg-rose-950/80 text-emerald-200 hover:text-rose-200 font-bold py-2.5 rounded-xl border border-emerald-700/60 text-xs transition-colors"
-                            >
-                                Leave Room 🚪
-                            </button>
-                        </div>
+                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                    {/* LEFT: Players & Ready Toggle */}
+                                    <div className="lg:col-span-7 space-y-4">
+                                        {/* CODE DISPLAY FOR GUEST */}
+                                        <div className="bg-emerald-900/40 p-4 rounded-2xl border border-emerald-800 flex items-center justify-between">
+                                            <div>
+                                                <span className="text-[10px] uppercase font-bold tracking-widest text-emerald-300 block mb-0.5">ROOM CODE</span>
+                                                <span className="text-2xl font-black text-yellow-400 font-mono tracking-wider">{onlineRoomCode}</span>
+                                            </div>
+                                            <button 
+                                                onClick={copyRoomCode}
+                                                className="bg-emerald-800 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-1.5 rounded-lg border border-emerald-600 transition-all"
+                                            >
+                                                {copyFeedback ? '✓ Copied' : '📋 Copy'}
+                                            </button>
+                                        </div>
+
+                                        {/* PARTICIPANTS DISPLAY */}
+                                        <div className="bg-emerald-900/20 p-4 rounded-2xl border border-emerald-800/60">
+                                            <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 mb-2.5">
+                                                Lobby Players ({currentPlayersCount} / {maxPlayers})
+                                            </h3>
+
+                                            <div className="space-y-2 max-h-[220px] overflow-y-auto">
+                                                {onlineRoom?.players?.map((p, idx) => {
+                                                    const isSelf = p.id === userUid;
+                                                    return (
+                                                        <div key={p.id || idx} className="bg-emerald-900/40 p-3 rounded-xl border border-emerald-800/80 flex items-center justify-between">
+                                                            <div className="flex items-center gap-2.5">
+                                                                <div className="w-8 h-8 rounded-full bg-emerald-800 flex items-center justify-center font-bold text-yellow-300 text-xs border border-emerald-600">
+                                                                    {p.isBot ? '🤖' : p.isHost ? '👑' : `P${idx+1}`}
+                                                                </div>
+                                                                <div>
+                                                                    <div className="font-extrabold text-white text-xs flex items-center gap-1.5">
+                                                                        <span>{p.name}</span>
+                                                                        {isSelf && <span className="text-[9px] bg-yellow-500 text-slate-950 font-bold px-1.5 py-0.2 rounded">YOU</span>}
+                                                                    </div>
+                                                                    <div className="text-[10px] text-emerald-300/60">
+                                                                        {p.isBot ? `AI Bot (${p.botDifficulty || 'medium'})` : p.isHost ? 'Room Host 👑' : 'Guest Player'}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="text-xs font-bold">
+                                                                {p.isReady ? (
+                                                                    <span className="text-emerald-400 bg-emerald-950/80 px-2 py-1 rounded-lg border border-emerald-600 text-[10px]">✓ Ready</span>
+                                                                ) : (
+                                                                    <span className="text-amber-300 bg-amber-950/80 px-2 py-1 rounded-lg border border-amber-700/60 text-[10px]">⏳ Waiting</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* RIGHT: Lobby Settings Summary */}
+                                    <div className="lg:col-span-5 bg-emerald-900/20 p-5 rounded-2xl border border-emerald-800/60 space-y-4 flex flex-col justify-between">
+                                        <div>
+                                            <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 border-b border-emerald-800/50 pb-2 mb-3">
+                                                📋 Room Configuration
+                                            </h3>
+
+                                            <div className="space-y-2.5 text-xs">
+                                                <div className="flex justify-between items-center bg-emerald-950/40 p-2 rounded-xl">
+                                                    <span className="text-emerald-300/80">Region</span>
+                                                    <span className="text-white font-bold uppercase">{onlineRoom?.region === 'usa' ? '🇺🇸 US Server' : onlineRoom?.region === 'canada' ? '🇨🇦 Canada Server' : '🌐 Global'}</span>
+                                                </div>
+
+                                                <div className="flex justify-between items-center bg-emerald-950/40 p-2 rounded-xl">
+                                                    <span className="text-emerald-300/80">Visibility</span>
+                                                    <span className="text-white font-bold">{onlineRoom?.isPublic ? '🌐 Public Lobby' : '🔒 Private / Invite'}</span>
+                                                </div>
+
+                                                <div className="flex justify-between items-center bg-emerald-950/40 p-2 rounded-xl">
+                                                    <span className="text-emerald-300/80">Turn Timer Limit</span>
+                                                    <span className="text-yellow-400 font-extrabold">
+                                                        {onlineRoom?.turnTimer === 0 ? 'Unlimited' : `${onlineRoom?.turnTimer ?? 30} seconds`}
+                                                    </span>
+                                                </div>
+
+                                                <div className="flex justify-between items-center bg-emerald-950/40 p-2 rounded-xl">
+                                                    <span className="text-emerald-300/80">Deck Card Design</span>
+                                                    <span className="text-emerald-200 font-bold capitalize">
+                                                        🎨 {onlineRoom?.deckTheme || 'classic'} Style
+                                                    </span>
+                                                </div>
+
+                                                <div className="flex justify-between items-center bg-emerald-950/40 p-2 rounded-xl">
+                                                    <span className="text-emerald-300/80">Maximum Competitors</span>
+                                                    <span className="text-white font-bold">{maxPlayers} Slots</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* READY ACTION TOGGLE */}
+                                        <div className="mt-4 pt-3 border-t border-emerald-800/30">
+                                            <button 
+                                                onClick={toggleOnlineReady}
+                                                className={`w-full font-extrabold py-3.5 px-6 rounded-xl shadow-lg transition-all text-sm uppercase tracking-wide ${
+                                                    onlineRoom?.players?.[myPlayerIndex]?.isReady 
+                                                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white' 
+                                                        : 'bg-yellow-500 hover:bg-yellow-400 text-slate-950'
+                                                }`}
+                                            >
+                                                {onlineRoom?.players?.[myPlayerIndex]?.isReady ? '✓ You Are Ready!' : 'Ready Up Match! ⚡'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 );
             }
