@@ -10,7 +10,8 @@ service cloud.firestore {
                    && request.resource.data.hostId is string
                    && request.resource.data.status in ['waiting', 'playing', 'ended']
                    && request.resource.data.maxPlayers >= 2
-                   && request.resource.data.maxPlayers <= 4;
+                   && request.resource.data.maxPlayers <= 4
+                   && (!('region' in request.resource.data) || request.resource.data.region in ['usa', 'canada', 'global']);
 
       // Allow room state updates (player joins, moves, readiness, card plays)
       allow update: if resource.data.code == request.resource.data.code

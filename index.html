@@ -915,6 +915,8 @@
             const [createMaxPlayers, setCreateMaxPlayers] = useState(2);
             const [createIsPublic, setCreateIsPublic] = useState(true);
             const [createFillBots, setCreateFillBots] = useState(false);
+            const [createRoomRegion, setCreateRoomRegion] = useState('global');
+            const [lobbyRegionFilter, setLobbyRegionFilter] = useState('all');
             const [copyFeedback, setCopyFeedback] = useState(false);
 
             const getOrCreateLocalUid = () => {
@@ -931,10 +933,10 @@
             };
 
             const updatePlayerName = (newName) => {
-                const trimmed = newName.trim().slice(0, 16);
-                setPlayerName(trimmed || 'Player');
+                const sliced = newName.slice(0, 16);
+                setPlayerName(sliced);
                 try {
-                    localStorage.setItem('memory_grid_username', trimmed || 'Player');
+                    localStorage.setItem('memory_grid_username', sliced);
                 } catch (e) {}
             };
 
@@ -1056,9 +1058,11 @@
                 setOnlineError("");
                 const code = generateRoomCode();
                 
+                const effectiveName = playerName.trim() || 'Player';
+
                 const hostPlayer = {
                     id: userUid,
-                    name: playerName,
+                    name: effectiveName,
                     isHost: true,
                     isReady: true,
                     isBot: false,
@@ -1086,10 +1090,11 @@
                 const roomData = {
                     code,
                     hostId: userUid,
-                    hostName: playerName,
+                    hostName: effectiveName,
                     maxPlayers: createMaxPlayers,
                     status: 'waiting',
                     isPublic: createIsPublic,
+                    region: createRoomRegion,
                     players: initialPlayers,
                     playerCount: createMaxPlayers,
                     deck: [],
@@ -1141,6 +1146,8 @@
                     let updatedPlayers = [...data.players];
                     let existingIdx = updatedPlayers.findIndex(p => p.id === userUid);
 
+                    const effectiveName = playerName.trim() || 'Player';
+
                     if (existingIdx === -1) {
                         if (updatedPlayers.length >= data.maxPlayers) {
                             setOnlineError("Room is full!");
@@ -1148,7 +1155,7 @@
                         }
                         updatedPlayers.push({
                             id: userUid,
-                            name: playerName,
+                            name: effectiveName,
                             isHost: false,
                             isReady: false,
                             isBot: false,
@@ -1156,7 +1163,7 @@
                             score: 0
                         });
                     } else {
-                        updatedPlayers[existingIdx].name = playerName;
+                        updatedPlayers[existingIdx].name = effectiveName;
                     }
 
                     await docRef.update({
@@ -2620,6 +2627,14 @@
                                         type="text" 
                                         value={playerName} 
                                         onChange={(e) => updatePlayerName(e.target.value)}
+                                        onBlur={(e) => {
+                                            const trimmed = e.target.value.trim();
+                                            if (!trimmed) {
+                                                updatePlayerName('Player');
+                                            } else {
+                                                updatePlayerName(trimmed);
+                                            }
+                                        }}
                                         maxLength={16}
                                         className="bg-slate-950/80 border border-emerald-700 text-yellow-300 font-bold px-3 py-2 rounded-xl text-sm w-full focus:outline-none focus:ring-2 focus:ring-yellow-400"
                                         placeholder="Enter nickname..."
@@ -2680,6 +2695,29 @@
                                                     {createFillBots ? '🤖 Yes' : '👤 No'}
                                                 </button>
                                             </div>
+
+                                            <div>
+                                                <span className="text-emerald-300 font-semibold block mb-1">Server Region:</span>
+                                                <div className="flex gap-1">
+                                                    {[
+                                                        { id: 'usa', label: '🇺🇸 US' },
+                                                        { id: 'canada', label: '🇨🇦 CA' },
+                                                        { id: 'global', label: '🌐 Global' }
+                                                    ].map(reg => (
+                                                        <button
+                                                            key={reg.id}
+                                                            onClick={() => setCreateRoomRegion(reg.id)}
+                                                            className={`flex-1 py-1 rounded-lg font-bold text-[10px] transition-all ${
+                                                                createRoomRegion === reg.id 
+                                                                    ? 'bg-yellow-500 text-slate-950 shadow-md ring-1 ring-yellow-400' 
+                                                                    : 'bg-emerald-950 text-emerald-300 hover:bg-emerald-800'
+                                                            }`}
+                                                        >
+                                                            {reg.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -2720,41 +2758,76 @@
 
                             {/* PUBLIC ROOMS LIST */}
                             <div className="text-left bg-emerald-900/40 p-3.5 rounded-2xl border border-emerald-800/80">
-                                <div className="flex justify-between items-center mb-2.5">
-                                    <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 flex items-center gap-2">
-                                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                                        Live Public Lobbies ({publicRooms.length})
-                                    </h3>
-                                </div>
+                                {(() => {
+                                    const filteredRooms = publicRooms.filter(room => {
+                                        if (lobbyRegionFilter === 'all') return true;
+                                        return (room.region || 'global') === lobbyRegionFilter;
+                                    });
 
-                                {publicRooms.length === 0 ? (
-                                    <div className="text-center py-6 text-emerald-300/60 text-xs border border-dashed border-emerald-800 rounded-xl">
-                                        No open public games right now.<br/>Create one above to start playing!
-                                    </div>
-                                ) : (
-                                    <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-                                        {publicRooms.map(room => (
-                                            <div key={room.id} className="bg-emerald-950/80 p-2.5 rounded-xl border border-emerald-700/60 flex items-center justify-between hover:border-yellow-400/50 transition-colors">
-                                                <div>
-                                                    <div className="font-extrabold text-yellow-300 text-xs flex items-center gap-1.5">
-                                                        <span>👑 {room.hostName || 'Host'}</span>
-                                                        <span className="text-[10px] bg-emerald-900/80 px-1.5 py-0.5 rounded text-emerald-200">Code: {room.code}</span>
-                                                    </div>
-                                                    <div className="text-[10px] text-emerald-300/70">
-                                                        Players: {room.players ? room.players.length : 1} / {room.maxPlayers || 4}
-                                                    </div>
+                                    return (
+                                        <>
+                                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2.5">
+                                                <h3 className="text-xs uppercase tracking-wider font-extrabold text-emerald-300 flex items-center gap-2">
+                                                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                                                    Live Lobbies ({filteredRooms.length})
+                                                </h3>
+                                                {/* Region Filter Tabs */}
+                                                <div className="flex gap-1 bg-slate-950/40 p-0.5 rounded-lg border border-emerald-800/50">
+                                                    {[
+                                                        { id: 'all', label: '🌎 All' },
+                                                        { id: 'usa', label: '🇺🇸 US' },
+                                                        { id: 'canada', label: '🇨🇦 CA' },
+                                                        { id: 'global', label: '🌐 Global' }
+                                                    ].map(reg => (
+                                                        <button
+                                                            key={reg.id}
+                                                            onClick={() => { soundManager.play('click'); setLobbyRegionFilter(reg.id); }}
+                                                            className={`px-2 py-1 rounded-md text-[10px] font-black transition-all ${
+                                                                lobbyRegionFilter === reg.id
+                                                                    ? 'bg-yellow-500 text-slate-950 shadow-sm'
+                                                                    : 'text-emerald-300 hover:text-white hover:bg-emerald-800/30'
+                                                            }`}
+                                                        >
+                                                            {reg.label}
+                                                        </button>
+                                                    ))}
                                                 </div>
-
-                                                <button
-                                                    onClick={() => joinOnlineRoom(room.code)}
-                                                    className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg shadow transition-transform active:scale-95"
-                                                >
-                                                    Join
-                                                </button>
                                             </div>
-                                        ))}
-                                    </div>
-                                )}
+
+                                            {filteredRooms.length === 0 ? (
+                                                <div className="text-center py-6 text-emerald-300/60 text-xs border border-dashed border-emerald-800 rounded-xl">
+                                                    No open {lobbyRegionFilter !== 'all' ? `${lobbyRegionFilter.toUpperCase()} ` : ''}games right now.<br/>Host a game above to start!
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                                                    {filteredRooms.map(room => (
+                                                        <div key={room.id} className="bg-emerald-950/80 p-2.5 rounded-xl border border-emerald-700/60 flex items-center justify-between hover:border-yellow-400/50 transition-colors">
+                                                            <div>
+                                                                <div className="font-extrabold text-yellow-300 text-xs flex items-center gap-1.5 flex-wrap">
+                                                                    <span>👑 {room.hostName || 'Host'}</span>
+                                                                    <span className="text-[10px] bg-emerald-900/80 px-1.5 py-0.5 rounded text-emerald-200">Code: {room.code}</span>
+                                                                    <span className="text-[9px] uppercase bg-slate-950/60 px-1.5 py-0.5 rounded text-yellow-400 font-bold border border-yellow-500/20">
+                                                                        {room.region === 'usa' ? '🇺🇸 USA' : room.region === 'canada' ? '🇨🇦 Canada' : '🌐 Global'}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="text-[10px] text-emerald-300/70 mt-0.5">
+                                                                    Players: {room.players ? room.players.length : 1} / {room.maxPlayers || 4}
+                                                                </div>
+                                                            </div>
+
+                                                            <button
+                                                                onClick={() => joinOnlineRoom(room.code)}
+                                                                className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg shadow transition-transform active:scale-95"
+                                                            >
+                                                                Join
+                                                            </button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </>
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>

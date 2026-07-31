@@ -11,6 +11,7 @@
         "maxPlayers": { "type": "number" },
         "status": { "type": "string" },
         "isPublic": { "type": "boolean" },
+        "region": { "type": "string" },
         "players": { "type": "array" },
         "deck": { "type": "array" },
         "discardPile": { "type": "array" },
