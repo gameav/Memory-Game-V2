@@ -597,33 +597,45 @@
         let db = null;
         let auth = null;
 
+        function getFirestoreDb(config) {
+            if (db) return db;
+            if (typeof firebase === 'undefined' || !firebase.apps || !firebase.apps.length) return null;
+            
+            const targetConfig = config || (typeof defaultFirebaseConfig !== 'undefined' ? defaultFirebaseConfig : {});
+            const dbId = targetConfig.firestoreDatabaseId || targetConfig.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
+            
+            try {
+                if (dbId && dbId !== '(default)') {
+                    console.log("Initializing Firestore with Database ID:", dbId);
+                    try {
+                        db = firebase.app().firestore(dbId);
+                    } catch (e1) {
+                        db = firebase.app().firestore();
+                    }
+                } else {
+                    db = firebase.app().firestore();
+                }
+            } catch (e) {
+                console.error("Firestore init error:", e);
+                try { db = firebase.app().firestore(); } catch (fallbackErr) {}
+            }
+            return db;
+        }
+
         async function initializeFirebaseApp(config) {
             try {
                 if (typeof firebase !== 'undefined') {
                     if (!firebase.apps.length) {
                         firebase.initializeApp(config);
                     }
-                    const dbId = config.firestoreDatabaseId || config.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
-                    
-                    if (dbId && dbId !== '(default)') {
-                        console.log("Initializing Firestore with DB ID:", dbId);
-                        db = firebase.app().firestore(dbId);
-                    } else {
-                        console.log("Using default Firestore database.");
-                        db = firebase.app().firestore();
-                    }
-                    
+                    getFirestoreDb(config);
                     auth = firebase.auth();
                     console.log("Firebase initialized successfully.");
                 }
             } catch (e) {
                 console.error("Firebase init error:", e);
-                try {
-                    db = firebase.app().firestore();
-                    auth = firebase.auth();
-                } catch (fallbackErr) {
-                    console.error("Critical fallback init failed:", fallbackErr);
-                }
+                getFirestoreDb(config);
+                try { auth = firebase.auth(); } catch (f) {}
             }
         }
 
@@ -940,6 +952,8 @@
             const [myPlayerIndex, setMyPlayerIndex] = useState(0);
             const [emotes, setEmotes] = useState([]);
             const [onlineError, setOnlineError] = useState("");
+            const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+            const [isJoiningRoom, setIsJoiningRoom] = useState(false);
             const [createMaxPlayers, setCreateMaxPlayers] = useState(2);
             const [createIsPublic, setCreateIsPublic] = useState(true);
             const [createFillBots, setCreateFillBots] = useState(false);
@@ -974,8 +988,9 @@
 
             // Subscribe to public rooms in online hub
             useEffect(() => {
-                if (gameState === 'online-hub' && db) {
-                    const unsubscribe = db.collection('rooms')
+                const currentDb = getFirestoreDb();
+                if (gameState === 'online-hub' && currentDb) {
+                    const unsubscribe = currentDb.collection('rooms')
                         .where('status', '==', 'waiting')
                         .where('isPublic', '==', true)
                         .onSnapshot(snapshot => {
@@ -991,8 +1006,9 @@
 
             // Subscribe to active room doc
             useEffect(() => {
-                if (isOnlineMode && onlineRoomCode && db) {
-                    const roomRef = db.collection('rooms').doc(onlineRoomCode);
+                const currentDb = getFirestoreDb();
+                if (isOnlineMode && onlineRoomCode && currentDb) {
+                    const roomRef = currentDb.collection('rooms').doc(onlineRoomCode);
                     const unsubscribe = roomRef.onSnapshot(doc => {
                         if (doc.exists) {
                             onlineRoomLoadedRef.current = true;
@@ -1061,9 +1077,10 @@
             }, [isOnlineMode, onlineRoomCode, userUid]);
 
             const updateOnlineRoom = async (updates) => {
-                if (!isOnlineMode || !onlineRoomCode || !db) return;
+                const currentDb = getFirestoreDb();
+                if (!isOnlineMode || !onlineRoomCode || !currentDb) return;
                 try {
-                    await db.collection('rooms').doc(onlineRoomCode).update({
+                    await currentDb.collection('rooms').doc(onlineRoomCode).update({
                         ...updates,
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
@@ -1082,12 +1099,14 @@
             };
 
             const createOnlineRoom = async () => {
-                if (!db || !userUid) {
-                    setOnlineError("Connecting to Firebase...");
+                const currentDb = getFirestoreDb();
+                if (!currentDb || !userUid) {
+                    setOnlineError("Connecting to live database... please wait a moment.");
                     return;
                 }
                 soundManager.play('click');
                 setOnlineError("");
+                setIsCreatingRoom(true);
                 const code = generateRoomCode();
                 
                 const effectiveName = playerName.trim() || 'Player';
@@ -1144,7 +1163,14 @@
                 try {
                     isHostRef.current = true;
                     onlineRoomLoadedRef.current = false;
-                    await db.collection('rooms').doc(code).set(roomData);
+
+                    const savePromise = currentDb.collection('rooms').doc(code).set(roomData);
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error("Database operation timed out. Please check network/Firebase.")), 8000)
+                    );
+
+                    await Promise.race([savePromise, timeoutPromise]);
+
                     setOnlineRoomCode(code);
                     setOnlineRoom(roomData); // Immediately populate room state to ensure instant host lobby view render
                     setIsOnlineMode(true);
@@ -1156,24 +1182,35 @@
                     isHostRef.current = false;
                     onlineRoomLoadedRef.current = false;
                     setOnlineError("Could not create room: " + (err.message || err));
+                } finally {
+                    setIsCreatingRoom(false);
                 }
             };
 
             const joinOnlineRoom = async (codeToJoin) => {
-                if (!db || !userUid) return;
+                const currentDb = getFirestoreDb();
+                if (!currentDb || !userUid) {
+                    setOnlineError("Connecting to live database... please wait a moment.");
+                    return;
+                }
                 const cleanCode = (codeToJoin || joinInputCode).trim().toUpperCase();
                 if (!cleanCode) {
-                    setOnlineError("Please enter a room code.");
+                    setOnlineError("Please enter a 5-character room code.");
                     return;
                 }
                 soundManager.play('click');
                 setOnlineError("");
+                setIsJoiningRoom(true);
 
                 try {
                     const docRef = db.collection('rooms').doc(cleanCode);
-                    const docSnap = await docRef.get();
+                    const docSnap = await Promise.race([
+                        docRef.get(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("Database read timed out.")), 8000))
+                    ]);
+
                     if (!docSnap.exists) {
-                        setOnlineError("Room not found! Check the code.");
+                        setOnlineError("Room not found! Check the 5-character code.");
                         return;
                     }
 
@@ -1224,6 +1261,8 @@
                     isHostRef.current = false;
                     onlineRoomLoadedRef.current = false;
                     setOnlineError("Failed to join room: " + (err.message || err));
+                } finally {
+                    setIsJoiningRoom(false);
                 }
             };
 
@@ -1336,9 +1375,10 @@
 
             const leaveOnlineRoom = async () => {
                 soundManager.play('click');
-                if (isOnlineMode && onlineRoomCode && db && userUid) {
+                const currentDb = getFirestoreDb();
+                if (isOnlineMode && onlineRoomCode && currentDb && userUid) {
                     try {
-                        const docRef = db.collection('rooms').doc(onlineRoomCode);
+                        const docRef = currentDb.collection('rooms').doc(onlineRoomCode);
                         const docSnap = await docRef.get();
                         if (docSnap.exists) {
                             const data = docSnap.data();
@@ -2996,13 +3036,17 @@
 
                                     <button 
                                         onClick={createOnlineRoom}
+                                        disabled={isCreatingRoom}
                                         className={`w-full font-extrabold py-2.5 rounded-xl shadow transition-all text-xs uppercase tracking-wide mt-1 flex items-center justify-center gap-1.5 ${
+                                            isCreatingRoom ? 'opacity-75 cursor-not-allowed bg-slate-700 text-slate-300' :
                                             createIsPublic 
                                                 ? 'bg-yellow-500 hover:bg-yellow-400 text-slate-950 shadow-yellow-500/20' 
                                                 : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
                                         }`}
                                     >
-                                        {createIsPublic ? (
+                                        {isCreatingRoom ? (
+                                            <>⏳ Creating Lobby...</>
+                                        ) : createIsPublic ? (
                                             <>Create Public Room 🚀</>
                                         ) : (
                                             <>Create Private Room 🔒</>
@@ -3030,9 +3074,12 @@
 
                                     <button 
                                         onClick={() => joinOnlineRoom(joinInputCode)}
-                                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold py-2.5 rounded-xl shadow transition-all text-xs uppercase tracking-wide"
+                                        disabled={isJoiningRoom}
+                                        className={`w-full font-extrabold py-2.5 rounded-xl shadow transition-all text-xs uppercase tracking-wide flex items-center justify-center gap-1.5 ${
+                                            isJoiningRoom ? 'opacity-75 cursor-not-allowed bg-slate-700 text-slate-300' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+                                        }`}
                                     >
-                                        Join Room ➡️
+                                        {isJoiningRoom ? <>⏳ Joining Room...</> : <>Join Room ➡️</>}
                                     </button>
                                 </div>
                             </div>
