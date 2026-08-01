@@ -619,8 +619,8 @@
                             db = customDb;
                             console.log("Verified custom Firestore database is active.");
                         } catch (err) {
-                            console.warn("Custom DB test failed or timed out. Falling back to default database.", err.message || err);
-                            db = firebase.app().firestore();
+                            console.warn("Custom DB test finished. Using custom Firestore database.", err.message || err);
+                            db = customDb;
                         }
                     } else {
                         console.log("Using default Firestore database.");
@@ -924,6 +924,19 @@
             const [isDealing, setIsDealing] = useState(false);
 
             // ONLINE MULTIPLAYER STATE
+            const getOrCreateLocalUid = () => {
+                try {
+                    let stored = localStorage.getItem('memory_grid_uid');
+                    if (!stored) {
+                        stored = 'usr_' + Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+                        localStorage.setItem('memory_grid_uid', stored);
+                    }
+                    return stored;
+                } catch (e) {
+                    return 'usr_' + Math.random().toString(36).substring(2, 11);
+                }
+            };
+
             const [playerName, setPlayerName] = useState(() => {
                 try {
                     return localStorage.getItem('memory_grid_username') || `Player #${Math.floor(1000 + Math.random() * 9000)}`;
@@ -931,9 +944,10 @@
                     return `Player #${Math.floor(1000 + Math.random() * 9000)}`;
                 }
             });
-            const [userUid, setUserUid] = useState(null);
+            const [userUid, setUserUid] = useState(() => getOrCreateLocalUid());
             const [onlineRoomCode, setOnlineRoomCode] = useState("");
             const [onlineRoom, setOnlineRoom] = useState(null);
+            const [showPrivateCodeModal, setShowPrivateCodeModal] = useState(false);
             const [publicRooms, setPublicRooms] = useState([]);
             const [isOnlineMode, setIsOnlineMode] = useState(false);
             const [joinInputCode, setJoinInputCode] = useState("");
@@ -950,19 +964,6 @@
             const onlineRoomLoadedRef = React.useRef(false);
             const isHostRef = React.useRef(false);
 
-            const getOrCreateLocalUid = () => {
-                try {
-                    let stored = localStorage.getItem('memory_grid_uid');
-                    if (!stored) {
-                        stored = 'usr_' + Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
-                        localStorage.setItem('memory_grid_uid', stored);
-                    }
-                    return stored;
-                } catch (e) {
-                    return 'usr_' + Math.random().toString(36).substring(2, 11);
-                }
-            };
-
             const updatePlayerName = (newName) => {
                 const sliced = newName.slice(0, 16);
                 setPlayerName(sliced);
@@ -971,24 +972,12 @@
                 } catch (e) {}
             };
 
-            // Initialize Anonymous Auth with local UID fallback
+            // Initialize Anonymous Auth in the background
             useEffect(() => {
                 if (auth) {
-                    const unsubscribe = auth.onAuthStateChanged((user) => {
-                        if (user) {
-                            setUserUid(user.uid);
-                        } else {
-                            auth.signInAnonymously().then(res => {
-                                if (res && res.user) setUserUid(res.user.uid);
-                            }).catch(err => {
-                                console.warn("Anonymous Auth unavailable; falling back to persistent client ID:", err?.message || err);
-                                setUserUid(getOrCreateLocalUid());
-                            });
-                        }
+                    auth.signInAnonymously().catch(err => {
+                        console.warn("Anonymous Auth sign-in failed:", err?.message || err);
                     });
-                    return () => unsubscribe();
-                } else {
-                    setUserUid(getOrCreateLocalUid());
                 }
             }, []);
 
@@ -1036,7 +1025,7 @@
                                 const myIdx = data.players.findIndex(p => p.id === userUid);
                                 if (myIdx !== -1) {
                                     setMyPlayerIndex(myIdx);
-                                } else if (data.status === 'waiting') {
+                                } else if (data.status === 'waiting' && !isHostRef.current) {
                                     setIsOnlineMode(false);
                                     setOnlineRoom(null);
                                     setOnlineRoomCode("");
@@ -1166,8 +1155,10 @@
                     onlineRoomLoadedRef.current = false;
                     await db.collection('rooms').doc(code).set(roomData);
                     setOnlineRoomCode(code);
+                    setOnlineRoom(roomData); // Immediately populate room state to ensure instant host lobby view render
                     setIsOnlineMode(true);
                     setMyPlayerIndex(0);
+                    setShowPrivateCodeModal(true);
                     setGameState('online-lobby');
                 } catch (err) {
                     console.error("Error creating room", err);
@@ -1232,7 +1223,9 @@
                         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
 
+                    data.players = updatedPlayers;
                     setOnlineRoomCode(cleanCode);
+                    setOnlineRoom(data); // Immediately populate room state to ensure instant client waiting screen with correct details
                     setIsOnlineMode(true);
                     setGameState('online-lobby');
                 } catch (err) {
@@ -1385,6 +1378,7 @@
                 setIsOnlineMode(false);
                 setOnlineRoom(null);
                 setOnlineRoomCode("");
+                setShowPrivateCodeModal(false);
                 onlineRoomLoadedRef.current = false;
                 isHostRef.current = false;
                 setGameState('menu');
@@ -2810,9 +2804,17 @@
 
                                     <button 
                                         onClick={createOnlineRoom}
-                                        className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-extrabold py-2.5 rounded-xl shadow transition-all text-xs uppercase tracking-wide mt-1"
+                                        className={`w-full font-extrabold py-2.5 rounded-xl shadow transition-all text-xs uppercase tracking-wide mt-1 flex items-center justify-center gap-1.5 ${
+                                            createIsPublic 
+                                                ? 'bg-yellow-500 hover:bg-yellow-400 text-slate-950 shadow-yellow-500/20' 
+                                                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+                                        }`}
                                     >
-                                        Create Room 🚀
+                                        {createIsPublic ? (
+                                            <>Create Public Room 🚀</>
+                                        ) : (
+                                            <>Create Private Room 🔒</>
+                                        )}
                                     </button>
                                 </div>
 
@@ -3357,11 +3359,52 @@
                                 </div>
                             </div>
                         )}
-                    </div>
-                );
-            }
+                    {showPrivateCodeModal && (
+                        <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center z-50 p-4">
+                            <div className="bg-emerald-950 border-2 border-yellow-500/80 p-6 sm:p-8 rounded-3xl max-w-sm w-full shadow-2xl text-center space-y-4 relative animate-fade-in">
+                                <div className="w-12 h-12 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 flex items-center justify-center mx-auto text-2xl">
+                                    {onlineRoom?.isPublic ? '🌐' : '🔒'}
+                                </div>
+                                
+                                <div>
+                                    <h2 className="text-xl font-black text-yellow-400 uppercase tracking-wide">
+                                        {onlineRoom?.isPublic ? 'Public Room Created!' : 'Private Room Created!'}
+                                    </h2>
+                                    <p className="text-emerald-200/80 text-xs mt-1">
+                                        {onlineRoom?.isPublic 
+                                            ? 'Your lobby is visible to other players, but friends can also join instantly using this code.' 
+                                            : 'Your lobby is private. Share this code with friends so they can enter your room directly.'}
+                                    </p>
+                                </div>
 
-            if (gameState === 'menu') {
+                                <div className="bg-slate-950/80 border border-emerald-800 p-4 rounded-2xl shadow-inner flex flex-col items-center justify-center gap-1">
+                                    <span className="text-[9px] uppercase font-bold tracking-widest text-emerald-400 block">LOBBY JOIN CODE</span>
+                                    <span className="text-4xl font-black tracking-widest text-yellow-400 font-mono select-all select-text">{onlineRoomCode}</span>
+                                </div>
+
+                                <div className="space-y-2 pt-2">
+                                    <button 
+                                        onClick={copyRoomCode}
+                                        className="w-full bg-emerald-800 hover:bg-emerald-700 text-white font-black py-2.5 rounded-xl text-xs uppercase tracking-wide transition-all border border-emerald-600 shadow-md flex items-center justify-center gap-1.5"
+                                    >
+                                        <span>{copyFeedback ? '✓ Code Copied!' : '📋 Copy Code'}</span>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => { soundManager.play('click'); setShowPrivateCodeModal(false); }}
+                                        className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-black py-3 rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg active:scale-98"
+                                    >
+                                        Enter Game Lobby 🎮
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        if (gameState === 'menu') {
                 return (
                     <div className={`page-screen ${pageVisible ? 'visible' : 'hidden'} flex flex-col items-center justify-center min-h-full h-full w-full p-3 sm:p-4 text-center overflow-y-auto`}>
                         <div className="bg-emerald-950/80 border-2 border-emerald-800/60 p-6 sm:p-8 rounded-3xl shadow-2xl max-w-sm w-full backdrop-blur-md lg:max-w-md lg:p-10 my-auto max-h-full overflow-y-auto">
