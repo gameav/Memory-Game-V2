@@ -606,7 +606,7 @@
                     const dbId = config.firestoreDatabaseId || config.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
                     
                     if (dbId && dbId !== '(default)') {
-                        console.log("Initializing Firestore with custom DB ID:", dbId);
+                        console.log("Initializing Firestore with DB ID:", dbId);
                         db = firebase.app().firestore(dbId);
                     } else {
                         console.log("Using default Firestore database.");
@@ -619,12 +619,7 @@
             } catch (e) {
                 console.error("Firebase init error:", e);
                 try {
-                    const dbId = config?.firestoreDatabaseId || config?.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
-                    if (dbId && dbId !== '(default)') {
-                        db = firebase.app().firestore(dbId);
-                    } else {
-                        db = firebase.app().firestore();
-                    }
+                    db = firebase.app().firestore();
                     auth = firebase.auth();
                 } catch (fallbackErr) {
                     console.error("Critical fallback init failed:", fallbackErr);
@@ -972,13 +967,9 @@
                 } catch (e) {}
             };
 
-            // Initialize Anonymous Auth in the background
+            // Persistent Local User Identifier
             useEffect(() => {
-                if (auth) {
-                    auth.signInAnonymously().catch(err => {
-                        console.warn("Anonymous Auth sign-in failed:", err?.message || err);
-                    });
-                }
+                // Local UID is initialized from localStorage via getOrCreateLocalUid()
             }, []);
 
             // Subscribe to public rooms in online hub
@@ -1806,15 +1797,16 @@
 
             const handleSetupPeek = (index) => {
                 if (gameState !== 'setup') return;
-                const currentCard = playersRef.current[0]?.cards?.[index];
+                const myIdx = isOnlineMode ? myPlayerIndex : 0;
+                const currentCard = playersRef.current[myIdx]?.cards?.[index];
                 if (!currentCard || currentCard.visible) return;
 
                 soundManager.play('peek');
 
                 setPlayers(prev => {
                     const updated = JSON.parse(JSON.stringify(prev));
-                    if (updated[0]?.cards?.[index]) {
-                        updated[0].cards[index].visible = true;
+                    if (updated[myIdx]?.cards?.[index]) {
+                        updated[myIdx].cards[index].visible = true;
                     }
                     return updated;
                 });
@@ -1825,15 +1817,15 @@
                         setTimeout(() => {
                             setPlayers(prevPlayers => {
                                 const reset = JSON.parse(JSON.stringify(prevPlayers));
-                                if (reset[0]?.cards) {
-                                    reset[0].cards = reset[0].cards.map(c => c ? ({...c, visible: false}) : null);
+                                if (reset[myIdx]?.cards) {
+                                    reset[myIdx].cards = reset[myIdx].cards.map(c => c ? ({...c, visible: false}) : null);
                                 }
                                 return reset;
                             });
                             
                             setReadyPlayers(new Array(playerCount).fill(false));
                             setGameState('playing');
-                            setMessage("Your turn! Draw or take discard.");
+                            setMessage(isOnlineMode && currentPlayer !== myPlayerIndex ? `Game started! ${players[currentPlayer]?.name || 'Player'}'s turn...` : "Your turn! Draw or take discard.");
                         }, 2000);
                         return 0;
                     }
@@ -1915,30 +1907,37 @@
 
             const swapCard = (index) => {
                 if (!activeCard) return;
-                if (!playersRef.current[0]?.cards?.[index]) {
+                const myIdx = isOnlineMode ? myPlayerIndex : 0;
+                if (!playersRef.current[myIdx]?.cards?.[index]) {
                     setMessage("Cannot swap with an empty card slot.");
                     return;
                 }
                 
                 soundManager.play('swap');
-                setAnimatingIndices([{ playerIdx: 0, cardIdx: index }]);
+                setAnimatingIndices([{ playerIdx: myIdx, cardIdx: index }]);
                 
                 setTimeout(() => {
-                    const p1Cards = [...playersRef.current[0].cards];
-                    const swappedOut = p1Cards[index];
+                    const myCards = [...(playersRef.current[myIdx]?.cards || [])];
+                    const swappedOut = myCards[index];
                     
-                    p1Cards[index] = { ...activeCard, visible: false, id: `p0-${index}-${Date.now()}` };
-                    if (swappedOut) {
-                        setDiscardPile(prev => [...prev, swappedOut].filter(Boolean));
-                    }
+                    myCards[index] = { ...activeCard, visible: false, id: `p${myIdx}-${index}-${Date.now()}` };
+                    const newDiscard = swappedOut ? [...discardPileRef.current, swappedOut].filter(Boolean) : [...discardPileRef.current];
+                    
                     setActiveCard(null);
+                    setDiscardPile(newDiscard);
                     
-                    setPlayers(prev => {
-                        const next = JSON.parse(JSON.stringify(prev));
-                        if (next[0]) next[0].cards = p1Cards;
-                        return next;
-                    });
+                    const nextPlayers = JSON.parse(JSON.stringify(playersRef.current));
+                    if (nextPlayers[myIdx]) nextPlayers[myIdx].cards = myCards;
+                    setPlayers(nextPlayers);
                     setAnimatingIndices([]);
+                    
+                    if (isOnlineMode) {
+                        updateOnlineRoom({
+                            players: nextPlayers,
+                            discardPile: newDiscard,
+                            activeCard: null
+                        });
+                    }
                     
                     triggerMatchWindow(() => {
                         prepareNextTurn();
@@ -1954,9 +1953,17 @@
                 
                 setTimeout(() => {
                     const discarded = activeCard;
-                    setDiscardPile(prev => [...prev, discarded].filter(Boolean));
+                    const newDiscard = [...discardPileRef.current, discarded].filter(Boolean);
+                    setDiscardPile(newDiscard);
                     setActiveCard(null);
                     setAnimatingCard(null);
+
+                    if (isOnlineMode) {
+                        updateOnlineRoom({
+                            discardPile: newDiscard,
+                            activeCard: null
+                        });
+                    }
 
                     if (discarded.value === '8') {
                         setMessage("Power: Tap one of YOUR cards to peek!");
@@ -2219,6 +2226,7 @@
             };
 
             const handleCardClick = (pIdx, cIdx) => {
+                const myIdx = isOnlineMode ? myPlayerIndex : 0;
                 const targetCard = playersRef.current[pIdx]?.cards?.[cIdx];
 
                 if (gameState === 'match-mode') {
@@ -2231,7 +2239,7 @@
                 }
 
                 if (gameState === 'setup') {
-                    if (pIdx === 0 && targetCard) {
+                    if (pIdx === myIdx && targetCard) {
                         handleSetupPeek(cIdx);
                     }
                     return;
@@ -2239,13 +2247,17 @@
 
                 if (!targetCard && gameState !== 'match-mode') return;
 
-                if (activeCard && pIdx === 0 && gameState === 'playing') {
+                if (activeCard && pIdx === myIdx && gameState === 'playing') {
+                    if (isOnlineMode && currentPlayer !== myPlayerIndex) {
+                        setMessage("It's not your turn!");
+                        return;
+                    }
                     swapCard(cIdx);
                     return;
                 }
 
                 if (gameState === 'peek-power') {
-                    if (pIdx !== 0) {
+                    if (pIdx !== myIdx) {
                         setMessage("Select one of YOUR cards to peek.");
                         return;
                     }
@@ -2259,7 +2271,7 @@
                 }
 
                 if (gameState === 'spy-power') {
-                    if (pIdx === 0) {
+                    if (pIdx === myIdx) {
                         setMessage("Select an OPPONENT'S card to spy.");
                         return;
                     }
@@ -2288,7 +2300,7 @@
                 }
 
                 if (gameState === 'king-look') {
-                    if (pIdx === 0) {
+                    if (pIdx === myIdx) {
                         setMessage("King power: Tap an OPPONENT'S card to peek.");
                         return;
                     }
@@ -2345,6 +2357,9 @@
                         const temp = updated[p1].cards[c1];
                         updated[p1].cards[c1] = updated[p2].cards[c2];
                         updated[p2].cards[c2] = temp;
+                        if (isOnlineMode) {
+                            updateOnlineRoom({ players: updated });
+                        }
                         return updated;
                     });
                     
@@ -2425,6 +2440,29 @@
                         tallyScores();
                         return;
                     }
+                }
+
+                if (isOnlineMode) {
+                    const nextPlayer = getNextPlayerCW(currentPlayer);
+                    setCurrentPlayer(nextPlayer);
+                    const msg = nextPlayer === myPlayerIndex ? "Your turn! Draw or take discard." : `${players[nextPlayer]?.name || 'Player'}'s turn...`;
+                    setMessage(msg);
+                    setGameState('playing');
+                    setActiveCard(null);
+
+                    updateOnlineRoom({
+                        currentPlayer: nextPlayer,
+                        activeCard: null,
+                        message: msg,
+                        gameState: 'playing'
+                    });
+
+                    if (isHostRef.current && players[nextPlayer]?.isBot) {
+                        aiTimerRef.current = setTimeout(() => {
+                            executeAITurn(nextPlayer, false);
+                        }, 1500);
+                    }
+                    return;
                 }
                 
                 setGameState('waiting-ready');
@@ -2718,6 +2756,16 @@
                 nextReady[botIdx] = true;
                 setReadyPlayers(nextReady);
 
+                if (isOnlineMode) {
+                    updateOnlineRoom({
+                        players: playersRef.current,
+                        deck: deckRef.current,
+                        discardPile: discardPileRef.current
+                    });
+                    prepareNextTurn();
+                    return;
+                }
+
                 const curDiff = difficultyRef.current || 'medium';
                 const showThreshold = curDiff === 'easy' ? 2 : curDiff === 'medium' ? 5 : 7;
 
@@ -2782,26 +2830,36 @@
                 soundManager.play('show');
                 const finalPlayers = playersRef.current.map(p => ({
                     ...p,
-                    cards: p.cards.map(c => c ? ({...c, visible: true}) : null)
+                    cards: (p.cards || []).map(c => c ? ({...c, visible: true}) : null)
                 }));
                 
                 const calculatedScores = playersRef.current.map(p => 
-                    p.cards.reduce((sum, c) => sum + getCardPoints(c), 0)
+                    (p.cards || []).reduce((sum, c) => sum + getCardPoints(c), 0)
                 );
 
                 setPlayers(finalPlayers);
                 setScores(calculatedScores);
                 setGameState('ended');
 
+                if (isOnlineMode) {
+                    updateOnlineRoom({
+                        players: finalPlayers,
+                        status: 'finished',
+                        gameState: 'ended'
+                    });
+                }
+
                 const minScore = Math.min(...calculatedScores);
                 const winners = [];
                 calculatedScores.forEach((score, idx) => {
-                    if (score === minScore) winners.push(idx === 0 ? "You" : playersRef.current[idx].name);
+                    const myIdx = isOnlineMode ? myPlayerIndex : 0;
+                    if (score === minScore) winners.push(idx === myIdx ? "You" : (playersRef.current[idx]?.name || "Player"));
                 });
 
                 setMessage(`Winner: ${winners.join(" & ")} (${minScore} pts)`);
 
-                const isYouWinner = calculatedScores[0] === minScore;
+                const myIdx = isOnlineMode ? myPlayerIndex : 0;
+                const isYouWinner = calculatedScores[myIdx] === minScore;
                 setGameStats(prev => {
                     const nextStats = {
                         wins: prev.wins + (isYouWinner ? 1 : 0),
@@ -4547,12 +4605,32 @@
             firestoreDatabaseId: "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b"
         };
 
-        fetch('firebase-applet-config.json')
+        // Determine the correct path for asset fetching (handles GitHub Pages subdirectory hosting)
+        const getAssetPath = (filename) => {
+            const pathname = window.location.pathname;
+            // If pathname does not end with a slash and is not pointing to a file, treat it as a subdirectory
+            if (pathname && !pathname.endsWith('/') && !pathname.split('/').pop().includes('.')) {
+                return `${pathname}/${filename}`;
+            }
+            return filename;
+        };
+
+        const configPath = getAssetPath('firebase-applet-config.json');
+        console.log("Attempting to load config from:", configPath);
+
+        fetch(configPath)
             .then(res => {
-                if (!res.ok) throw new Error("Relative fetch failed");
+                if (!res.ok) throw new Error("Fetch failed for relative path");
                 return res.json();
             })
-            .catch(() => fetch('/firebase-applet-config.json').then(res => res.json()))
+            .catch(() => fetch('firebase-applet-config.json').then(res => {
+                if (!res.ok) throw new Error("Fallback 1 failed");
+                return res.json();
+            }))
+            .catch(() => fetch('/firebase-applet-config.json').then(res => {
+                if (!res.ok) throw new Error("Fallback 2 failed");
+                return res.json();
+            }))
             .then(async config => {
                 await initializeFirebaseApp(config);
                 root.render(React.createElement(App));
