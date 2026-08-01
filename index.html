@@ -630,6 +630,14 @@
                     }
                     getFirestoreDb(config);
                     auth = firebase.auth();
+                    if (auth && !auth.currentUser) {
+                        try {
+                            await auth.signInAnonymously();
+                            console.log("Firebase anonymous auth successful.");
+                        } catch (aErr) {
+                            console.warn("Anonymous auth notice:", aErr);
+                        }
+                    }
                     console.log("Firebase initialized successfully.");
                 }
             } catch (e) {
