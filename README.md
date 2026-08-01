@@ -1,9 +1,11 @@
 # 🃏 Real-time Multi-User Memory Card Game ("Show" / Cabo / Golf)
 
+[![Play Live Demo](https://img.shields.io/badge/🎮_Play_Live-GitHub_Pages-0070f3?style=for-the-badge&logo=github)](https://gameav.github.io/Memory-Game-V2/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black&style=flat-square)](#)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-4.0-38B2AC?logo=tailwind-css&logoColor=white&style=flat-square)](#)
 [![Firebase](https://img.shields.io/badge/Firebase_Firestore-Cloud_DB-FFCA28?logo=firebase&logoColor=black&style=flat-square)](#)
-[![NodeJS](https://img.shields.io/badge/NodeJS-Fullstack-339933?logo=node.js&logoColor=white&style=flat-square)](#)
+
+🚀 **Live Game URL:** [https://gameav.github.io/Memory-Game-V2/](https://gameav.github.io/Memory-Game-V2/)
 
 A beautiful, high-fidelity, and fully responsive real-time **Memory Card Game** (popularly known as *Show*, *Cabo*, *Cambio*, or *Golf*). Play with physically nearby companions in Local mode, train your skills against tactical AI, or host live multiplayer lobby matches with real-time Firestore database synchronization!
 
