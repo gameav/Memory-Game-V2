@@ -8,10 +8,18 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Firebase Compat SDK -->
-    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+    <!-- Firebase Modular SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+        
+        window.fb = {
+            initializeApp, getFirestore, collection, doc, setDoc, getDoc, updateDoc, deleteDoc, onSnapshot, query, where, serverTimestamp, getAuth, signInAnonymously, onAuthStateChanged
+        };
+        // Dispatch an event so React knows Firebase is ready
+        window.dispatchEvent(new Event('firebaseModulesLoaded'));
+    </script>
     <style>
         .card-transition {
             transition: transform 0.35s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.3s ease;
@@ -596,10 +604,11 @@
 
         let db = null;
         let auth = null;
+        let firebaseAppInstance = null;
 
         function getFirestoreDb(config) {
             if (db) return db;
-            if (typeof firebase === 'undefined' || !firebase.apps || !firebase.apps.length) return null;
+            if (!window.fb || !firebaseAppInstance) return null;
             
             const targetConfig = config || (typeof defaultFirebaseConfig !== 'undefined' ? defaultFirebaseConfig : {});
             const dbId = targetConfig.firestoreDatabaseId || targetConfig.databaseId || "ai-studio-mainmemorygame-c7b702ea-9cf6-4101-9ed3-373265561d3b";
@@ -607,43 +616,38 @@
             try {
                 if (dbId && dbId !== '(default)') {
                     console.log("Initializing Firestore with Database ID:", dbId);
-                    try {
-                        db = firebase.app().firestore(dbId);
-                    } catch (e1) {
-                        db = firebase.app().firestore();
-                    }
+                    db = window.fb.getFirestore(firebaseAppInstance, dbId);
                 } else {
-                    db = firebase.app().firestore();
+                    db = window.fb.getFirestore(firebaseAppInstance);
                 }
             } catch (e) {
                 console.error("Firestore init error:", e);
-                try { db = firebase.app().firestore(); } catch (fallbackErr) {}
+                try { db = window.fb.getFirestore(firebaseAppInstance); } catch (f) {}
             }
             return db;
         }
 
         async function initializeFirebaseApp(config) {
+            if (!window.fb) return;
             try {
-                if (typeof firebase !== 'undefined') {
-                    if (!firebase.apps.length) {
-                        firebase.initializeApp(config);
-                    }
-                    getFirestoreDb(config);
-                    auth = firebase.auth();
-                    if (auth && !auth.currentUser) {
-                        try {
-                            await auth.signInAnonymously();
-                            console.log("Firebase anonymous auth successful.");
-                        } catch (aErr) {
-                            console.warn("Anonymous auth notice:", aErr);
-                        }
-                    }
-                    console.log("Firebase initialized successfully.");
+                if (!firebaseAppInstance) {
+                    firebaseAppInstance = window.fb.initializeApp(config);
                 }
+                getFirestoreDb(config);
+                auth = window.fb.getAuth(firebaseAppInstance);
+                if (auth && !auth.currentUser) {
+                    try {
+                        await window.fb.signInAnonymously(auth);
+                        console.log("Firebase anonymous auth successful.");
+                    } catch (aErr) {
+                        console.warn("Anonymous auth notice:", aErr);
+                    }
+                }
+                console.log("Firebase initialized successfully.");
             } catch (e) {
                 console.error("Firebase init error:", e);
                 getFirestoreDb(config);
-                try { auth = firebase.auth(); } catch (f) {}
+                try { auth = window.fb.getAuth(firebaseAppInstance); } catch (f) {}
             }
         }
 
@@ -998,10 +1002,8 @@
             useEffect(() => {
                 const currentDb = getFirestoreDb();
                 if (gameState === 'online-hub' && currentDb) {
-                    const unsubscribe = currentDb.collection('rooms')
-                        .where('status', '==', 'waiting')
-                        .where('isPublic', '==', true)
-                        .onSnapshot(snapshot => {
+                    const q = window.fb.query(window.fb.collection(currentDb, 'rooms'), window.fb.where('status', '==', 'waiting'), window.fb.where('isPublic', '==', true));
+                    const unsubscribe = window.fb.onSnapshot(q, snapshot => {
                             const rooms = [];
                             snapshot.forEach(doc => {
                                 rooms.push({ id: doc.id, ...doc.data() });
@@ -1016,9 +1018,9 @@
             useEffect(() => {
                 const currentDb = getFirestoreDb();
                 if (isOnlineMode && onlineRoomCode && currentDb) {
-                    const roomRef = currentDb.collection('rooms').doc(onlineRoomCode);
-                    const unsubscribe = roomRef.onSnapshot(doc => {
-                        if (doc.exists) {
+                    const roomRef = window.fb.doc(currentDb, 'rooms', onlineRoomCode);
+                    const unsubscribe = window.fb.onSnapshot(roomRef, doc => {
+                        if (doc.exists()) {
                             onlineRoomLoadedRef.current = true;
                             const data = doc.data();
                             setOnlineRoom(data);
@@ -1088,9 +1090,9 @@
                 const currentDb = getFirestoreDb();
                 if (!isOnlineMode || !onlineRoomCode || !currentDb) return;
                 try {
-                    await currentDb.collection('rooms').doc(onlineRoomCode).update({
+                    await window.fb.updateDoc(window.fb.doc(currentDb, 'rooms', onlineRoomCode), {
                         ...updates,
-                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        updatedAt: window.fb.serverTimestamp()
                     });
                 } catch (err) {
                     console.error("Failed to update online room", err);
@@ -1165,14 +1167,14 @@
                     showCalledBy: null,
                     message: "Waiting for players to join...",
                     emotes: [],
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    createdAt: window.fb.serverTimestamp()
                 };
 
                 try {
                     isHostRef.current = true;
                     onlineRoomLoadedRef.current = false;
 
-                    const savePromise = currentDb.collection('rooms').doc(code).set(roomData);
+                    const savePromise = window.fb.setDoc(window.fb.doc(currentDb, 'rooms', code), roomData);
                     const timeoutPromise = new Promise((_, reject) => 
                         setTimeout(() => reject(new Error("Database operation timed out. Please check network/Firebase.")), 8000)
                     );
@@ -1211,13 +1213,13 @@
                 setIsJoiningRoom(true);
 
                 try {
-                    const docRef = db.collection('rooms').doc(cleanCode);
+                    const docRef = window.fb.doc(currentDb, 'rooms', cleanCode);
                     const docSnap = await Promise.race([
-                        docRef.get(),
+                        window.fb.getDoc(docRef),
                         new Promise((_, reject) => setTimeout(() => reject(new Error("Database read timed out.")), 8000))
                     ]);
 
-                    if (!docSnap.exists) {
+                    if (!docSnap.exists()) {
                         setOnlineError("Room not found! Check the 5-character code.");
                         return;
                     }
@@ -1254,9 +1256,9 @@
                     isHostRef.current = false;
                     onlineRoomLoadedRef.current = false;
 
-                    await docRef.update({
+                    await window.fb.updateDoc(docRef, {
                         players: updatedPlayers,
-                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        updatedAt: window.fb.serverTimestamp()
                     });
 
                     data.players = updatedPlayers;
@@ -1386,27 +1388,27 @@
                 const currentDb = getFirestoreDb();
                 if (isOnlineMode && onlineRoomCode && currentDb && userUid) {
                     try {
-                        const docRef = currentDb.collection('rooms').doc(onlineRoomCode);
-                        const docSnap = await docRef.get();
-                        if (docSnap.exists) {
+                        const docRef = window.fb.doc(currentDb, 'rooms', onlineRoomCode);
+                        const docSnap = await window.fb.getDoc(docRef);
+                        if (docSnap.exists()) {
                             const data = docSnap.data();
                             const remaining = data.players.filter(p => p.id !== userUid && !p.isBot);
                             if (remaining.length === 0) {
-                                await docRef.delete();
+                                await window.fb.deleteDoc(docRef);
                             } else {
                                 const newPlayers = data.players.filter(p => p.id !== userUid);
                                 if (data.hostId === userUid) {
                                     const nextHost = newPlayers.find(p => !p.isBot);
                                     if (nextHost) {
                                         nextHost.isHost = true;
-                                        await docRef.update({
+                                        await window.fb.updateDoc(docRef, {
                                             hostId: nextHost.id,
                                             hostName: nextHost.name,
                                             players: newPlayers
                                         });
                                     }
                                 } else {
-                                    await docRef.update({ players: newPlayers });
+                                    await window.fb.updateDoc(docRef, { players: newPlayers });
                                 }
                             }
                         }
@@ -2964,8 +2966,21 @@
                             </div>
 
                             {onlineError && (
-                                <div className="mb-4 bg-rose-950/90 border border-rose-600 text-rose-200 text-xs py-2 px-3 rounded-xl font-semibold animate-bounce">
-                                    ⚠️ {onlineError}
+                                <div className="mb-4 bg-rose-950/90 border border-rose-600 text-rose-200 text-xs py-2 px-3 rounded-xl font-semibold flex items-center justify-between gap-2">
+                                    <span>⚠️ {onlineError}</span>
+                                    <button
+                                        onClick={() => {
+                                            setOnlineError("");
+                                            db = null;
+                                            getFirestoreDb();
+                                            if (auth && !auth.currentUser) {
+                                                auth.signInAnonymously().catch(() => {});
+                                            }
+                                        }}
+                                        className="bg-rose-800 hover:bg-rose-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[10px] whitespace-nowrap shadow"
+                                    >
+                                        🔄 Reset & Reconnect
+                                    </button>
                                 </div>
                             )}
 
