@@ -1,0 +1,16 @@
+{
+  "name": "Rat a Tat Cat",
+  "short_name": "RatATatCat",
+  "description": "A fun memory card game",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#022c22",
+  "theme_color": "#022c22",
+  "icons": [
+    {
+      "src": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f0cf/512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
